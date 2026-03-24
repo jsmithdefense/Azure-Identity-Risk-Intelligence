@@ -19,6 +19,7 @@ from .rbac_collector import (
     select_subscriptions_interactive,
 )
 from .risk_model import score_records, summarize_principal_risk
+from .report_writer import write_report
 from .role_taxonomy_generator import infer_bucket_from_actions
 
 
@@ -399,8 +400,9 @@ def main() -> None:
     
     name_cache: dict[tuple[str, str], str] = {}
     member_count_cache: dict[str, int] = {}
+    top_principals = principal_summaries[:10]
     
-    for p in principal_summaries[:10]:
+    for p in top_principals:
         cache_key = (p.principal_id, p.principal_type)
         if cache_key not in name_cache:
             name_cache[cache_key] = resolve_principal_name(
@@ -447,6 +449,18 @@ def main() -> None:
             )
 
         print()
+
+    report_path = write_report(
+        selected_subs=selected_subs,
+        all_records=all_records,
+        all_taxonomies=all_taxonomies,
+        all_actions=all_actions,
+        subscription_risks=subscription_risks,
+        top_principals=top_principals,
+        principal_names=name_cache,
+        group_member_counts=member_count_cache,
+    )
+    print(f"Report saved to {report_path}")
 
 
 if __name__ == "__main__":
