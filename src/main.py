@@ -13,6 +13,7 @@ from azure.mgmt.authorization import AuthorizationManagementClient
 
 from .ai_enrichment import run_ai_enrichment
 from .config_loader import load_risk_config
+from .pdf_report import generate_pdf_report
 from .rbac_collector import (
     build_role_definition_lookup,
     collect_role_assignments,
@@ -369,6 +370,11 @@ def main() -> None:
         all_records.extend(records)
         all_taxonomies.update(taxonomy)
         all_actions.update(actions)
+
+    for record in all_records:
+        role_subscriptions.setdefault(record.role_name, set()).add(
+            sub_id_to_name.get(record.subscription_id, record.subscription_id)
+        )
     
     # Aggregate and score across all subscriptions
     runtime_cfg = replace(cfg, role_taxonomy=all_taxonomies)
@@ -468,6 +474,24 @@ def main() -> None:
         principal_names=name_cache,
         selected_subs=selected_subs,
     )
+
+    export_pdf = input("Export report as PDF? [y/N]: ").strip().lower()
+    if export_pdf == "y":
+        try:
+            pdf_path = generate_pdf_report(
+                report_path=report_path,
+                selected_subs=selected_subs,
+                all_records=all_records,
+                all_taxonomies=all_taxonomies,
+                all_actions=all_actions,
+                role_subscriptions=role_subscriptions,
+                subscription_risks=subscription_risks,
+                top_principals=top_principals,
+                principal_names=name_cache,
+            )
+            print(f"PDF report saved to {pdf_path}")
+        except Exception as exc:
+            print(f"Failed to generate PDF report: {exc}")
 
 
 if __name__ == "__main__":
