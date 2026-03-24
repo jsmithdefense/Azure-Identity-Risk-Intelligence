@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from anthropic import Anthropic
+
+SYSTEM_PROMPT = """You are a cloud security analyst specializing in Azure RBAC risk interpretation.
+Given principal-level RBAC data, produce 3-5 plain English bullet points that explain what the principal can actually do across the environment.
+Focus on operational impact and realistic abuse potential, not just repeating role names.
+Keep each bullet concise and concrete. Return only bullet points."""
+
+MODEL_CATALOG = {
+    "1": {
+        "name": "claude-haiku-4-5-20251001",
+        "label": "fastest, lowest cost",
+        "input_per_mtok": 1.0,
+        "output_per_mtok": 5.0,
+    },
+    "2": {
+        "name": "claude-sonnet-4-6",
+        "label": "recommended, balanced",
+        "input_per_mtok": 3.0,
+        "output_per_mtok": 15.0,
+    },
+    "3": {
+        "name": "claude-opus-4-6",
+        "label": "most intelligent, highest cost",
+        "input_per_mtok": 5.0,
+        "output_per_mtok": 25.0,
+    },
+}
+
+
+def _estimate_tokens(text: str) -> int:
+    # Rough approximation: 1 token ~= 4 characters for mixed English/JSON payload.
+    return max(1, int(len(text) / 4))
+
+
+def _estimate_cost_usd(input_tokens: int, output_tokens: int, model_info: dict[str, Any]) -> float:
+    input_cost = (input_tokens / 1_000_000.0) * model_info["input_per_mtok"]
+    output_cost = (output_tokens / 1_000_000.0) * model_info["output_per_mtok"]
+    return input_cost + output_cost
+
+
+def _extract_text_response(message: Any) -> str:
+    parts: list[str] = []
+    for block in getattr(message, "content", []):
+        block_type = getattr(block, "type", "")
+        if block_type == "text":
+            parts.append(getattr(block, "text", "").strip())
+    return "\n".join([p for p in parts if p]).strip()
+
+
+def _scope_display_name(scope: str, scope_type: str) -> str:
+    if scope_type == "subscription":
+        return "subscription"
+
+    parts = scope.split("/")
+    try:
+        rg_index = parts.index("resourceGroups")
+        rg_name = parts[rg_index + 1] if rg_index + 1 < len(parts) else "unknown"
+    except (ValueError, IndexError):
+        return scope_type
+
+    if scope_type == "resource" and parts:
+        return f"{rg_name}/{parts[-1]}"
+    return rg_name
+
+
+def _build_principal_payload(
+    principal: Any,
+    principal_name: str,
+    sub_id_to_name: dict[str, str],
+) -> dict[str, Any]:
+    assignment_payloads = []
+    for sa in principal.risky_assignments:
+        r = sa.record
+        assignment_payloads.append(
+            {
+                "role_name": r.role_name,
+                "classification_bucket": sa.bucket,
+                "triggering_action": sa.triggering_action or "N/A",
+                "scope_display_name": _scope_display_name(r.scope, r.scope_type),
+                "scope_type": r.scope_type,
+                "subscription_name": sub_id_to_name.get(r.subscription_id, r.subscription_id),
+            }
+        )
+
+    return {
+        "principal_name": principal_name,
+        "principal_type": principal.principal_type,
+        "severity": principal.cumulative_severity,
+        "cumulative_score": principal.cumulative_score,
+        "assignments": assignment_payloads,
+        "instruction": (
+            "Return 3-5 plain English bullet points describing what this principal can "
+            "actually do across the environment. Focus on operational impact."
+        ),
+    }
+
+
+def _select_principals(top_principals: list[Any], principal_names: dict[tuple[str, str], str]) -> list[Any]:
+    print()
+    print("AI ENRICHMENT SELECTION")
+    print("=" * 90)
+    for idx, p in enumerate(top_principals, 1):
+        name = principal_names.get((p.principal_id, p.principal_type), p.principal_id)
+        print(f"{idx}. {name} | Severity = {p.cumulative_severity} | Score = {p.cumulative_score}")
+
+    print()
+    print("Select principals to enrich:")
+    print("  - Enter comma-separated numbers (e.g., 1,3,5)")
+    print("  - Enter 0 for all")
+    print("  - Enter S to skip")
+    raw = input("> ").strip()
+
+    if not raw:
+        return []
+    if raw.upper() == "S":
+        return []
+    if raw == "0":
+        return list(top_principals)
+
+    selected: list[Any] = []
+    seen = set()
+    for token in [t.strip() for t in raw.split(",") if t.strip()]:
+        try:
+            idx = int(token)
+            if idx < 1 or idx > len(top_principals):
+                continue
+            zero_idx = idx - 1
+            if zero_idx in seen:
+                continue
+            seen.add(zero_idx)
+            selected.append(top_principals[zero_idx])
+        except ValueError:
+            continue
+    return selected
+
+
+def _select_model_and_confirm(
+    selected_principals: list[Any],
+    principal_names: dict[tuple[str, str], str],
+    sub_id_to_name: dict[str, str],
+) -> tuple[str, dict[str, dict[str, Any]]] | None:
+    print()
+    print("AI MODEL SELECTION")
+    print("=" * 90)
+    print("1. claude-haiku-4-5-20251001 — fastest, lowest cost ($1/$5 per MTok)")
+    print("2. claude-sonnet-4-6 — recommended, balanced ($3/$15 per MTok)")
+    print("3. claude-opus-4-6 — most intelligent, highest cost ($5/$25 per MTok)")
+    model_choice = input("Select model [1-3, default 2]: ").strip() or "2"
+    if model_choice not in MODEL_CATALOG:
+        print("Invalid selection. Defaulting to claude-sonnet-4-6.")
+        model_choice = "2"
+    model_info = MODEL_CATALOG[model_choice]
+
+    payload_map: dict[str, dict[str, Any]] = {}
+    total_input_tokens = 0
+    total_output_tokens = 0
+    per_principal = []
+
+    for p in selected_principals:
+        key = f"{p.principal_id}|{p.principal_type}"
+        principal_name = principal_names.get((p.principal_id, p.principal_type), p.principal_id)
+        payload_obj = _build_principal_payload(p, principal_name, sub_id_to_name)
+        payload_text = json.dumps(payload_obj, ensure_ascii=True)
+        input_tokens = _estimate_tokens(SYSTEM_PROMPT) + _estimate_tokens(payload_text)
+        output_tokens = 400
+        total_input_tokens += input_tokens
+        total_output_tokens += output_tokens
+        estimated_cost = _estimate_cost_usd(input_tokens, output_tokens, model_info)
+        per_principal.append((principal_name, input_tokens, output_tokens, estimated_cost))
+        payload_map[key] = payload_obj
+
+    print()
+    print("Estimated cost per selected principal:")
+    for name, in_tok, out_tok, est_cost in per_principal:
+        print(f"  - {name}: ~{in_tok} input tok + ~{out_tok} output tok -> ${est_cost:.6f}")
+
+    total_estimated = _estimate_cost_usd(total_input_tokens, total_output_tokens, model_info)
+    print()
+    print(
+        f"Total estimated cost ({model_info['name']}, {len(selected_principals)} principal(s)): "
+        f"${total_estimated:.6f}"
+    )
+    confirm = input("Proceed with AI enrichment? [y/N]: ").strip().lower()
+    if confirm != "y":
+        return None
+
+    return model_info["name"], payload_map
+
+
+def _append_capability_summary_to_report(
+    report_path: str,
+    summaries: dict[tuple[str, str], str],
+) -> None:
+    report_file = Path(report_path)
+    if not report_file.is_absolute():
+        report_file = Path(__file__).resolve().parents[1] / report_file
+
+    data = json.loads(report_file.read_text(encoding="utf-8"))
+    for principal in data.get("principals", []):
+        key = (principal.get("id", ""), principal.get("type", ""))
+        if key in summaries:
+            principal["capability_summary"] = summaries[key]
+    report_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def run_ai_enrichment(
+    report_path: str,
+    top_principals: list[Any],
+    principal_names: dict[tuple[str, str], str],
+    selected_subs: list[dict[str, str]],
+) -> None:
+    selected = _select_principals(top_principals, principal_names)
+    if not selected:
+        print("AI enrichment skipped.")
+        return
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("AI enrichment unavailable: ANTHROPIC_API_KEY environment variable is not set.")
+        return
+
+    sub_id_to_name = {sub["id"]: sub["name"] for sub in selected_subs}
+    model_and_payloads = _select_model_and_confirm(selected, principal_names, sub_id_to_name)
+    if not model_and_payloads:
+        print("AI enrichment cancelled.")
+        return
+
+    model_name, payload_map = model_and_payloads
+    client = Anthropic(api_key=api_key)
+
+    print()
+    print("AI CAPABILITY ENRICHMENT")
+    print("=" * 90)
+
+    summaries: dict[tuple[str, str], str] = {}
+    total = len(selected)
+    for idx, principal in enumerate(selected, 1):
+        principal_name = principal_names.get(
+            (principal.principal_id, principal.principal_type),
+            principal.principal_id,
+        )
+        print(f"[{idx}/{total}] Enriching {principal_name} ...")
+
+        key = f"{principal.principal_id}|{principal.principal_type}"
+        payload_obj = payload_map[key]
+        try:
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=500,
+                system=SYSTEM_PROMPT,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(payload_obj, ensure_ascii=True, indent=2),
+                    }
+                ],
+            )
+            summary_text = _extract_text_response(response) or "- Unable to generate summary."
+            summaries[(principal.principal_id, principal.principal_type)] = summary_text
+            print(summary_text)
+            print()
+        except Exception as exc:
+            print(f"  Error enriching {principal_name}: {exc}")
+            continue
+
+    if not summaries:
+        print("No AI capability summaries were generated.")
+        return
+
+    try:
+        _append_capability_summary_to_report(report_path, summaries)
+        print(f"Updated report with capability summaries: {report_path}")
+    except Exception as exc:
+        print(f"Failed to append summaries to report JSON: {exc}")

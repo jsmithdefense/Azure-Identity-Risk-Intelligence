@@ -5,5 +5,3 @@ lab/terraform/*.tfstate
 lab/terraform/*.tfstate.*
 lab/terraform/.terraform.lock.hcl
 reports/
-.venv/
-__pycache__/

@@ -11,6 +11,7 @@ from typing import Dict, List
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.authorization import AuthorizationManagementClient
 
+from .ai_enrichment import run_ai_enrichment
 from .config_loader import load_risk_config
 from .rbac_collector import (
     build_role_definition_lookup,
@@ -461,6 +462,12 @@ def main() -> None:
         group_member_counts=member_count_cache,
     )
     print(f"Report saved to {report_path}")
+    run_ai_enrichment(
+        report_path=report_path,
+        top_principals=top_principals,
+        principal_names=name_cache,
+        selected_subs=selected_subs,
+    )
 
 
 if __name__ == "__main__":

@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 
-def _build_principal_payload(principal: Any, principal_name: str, member_count: int | None) -> dict[str, Any]:
+def _build_principal_payload(
+    principal: Any,
+    principal_name: str,
+    member_count: int | None,
+) -> dict[str, Any]:
     assignments = []
     for sa in principal.risky_assignments:
         record = sa.record
