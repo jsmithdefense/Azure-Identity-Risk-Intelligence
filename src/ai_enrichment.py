@@ -274,7 +274,7 @@ def run_ai_enrichment(
         try:
             response = client.messages.create(
                 model=model_name,
-                max_tokens=500,
+                max_tokens=1500,
                 system=SYSTEM_PROMPT,
                 messages=[
                     {
