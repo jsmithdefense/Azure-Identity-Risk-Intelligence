@@ -257,7 +257,7 @@ def run_ai_enrichment(
     client = Anthropic(api_key=api_key)
 
     print()
-    print("AI CAPABILITY ENRICHMENT")
+    print("AI ENRICHMENT SUMMARY")
     print("=" * 90)
 
     summaries: dict[tuple[str, str], str] = {}
