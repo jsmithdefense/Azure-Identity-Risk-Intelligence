@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from anthropic import Anthropic
 
 SYSTEM_PROMPT = """You are a cloud security analyst specializing in Azure RBAC risk interpretation.
-Given principal-level RBAC data, produce two sections exactly in this format:
+Given principal-level RBAC data, produce three sections exactly in this format:
 
 Capability Summary:
 - bullet
@@ -32,6 +33,31 @@ Recommended Actions:
 2. [HIGH | Effort: Medium] Action Title
 ...
 
+Remediation Actions:
+
+```json
+[
+  {
+    "priority": "CRITICAL",
+    "effort": "Low",
+    "title": "Human readable title",
+    "action_type": "remove_role_assignment",
+    "parameters": {
+      "principal_id": "exact principal_id from input",
+      "principal_type": "Group",
+      "role_name": "exact role name from input",
+      "scope": "exact full scope path from input",
+      "subscription_id": "exact subscription_id from input",
+      "subscription_name": "subscription name"
+    },
+    "validation": {
+      "type": "role_assignment_absent",
+      "description": "One sentence describing how to verify success"
+    }
+  }
+]
+```
+
 Requirements — Capability Summary:
 - Include 3-5 plain English bullets explaining what the principal can actually do across the environment.
 - Focus on operational impact and realistic abuse potential, not just repeating role names.
@@ -52,7 +78,17 @@ Content rules for Recommended Actions:
 - Validation must be verifiable (e.g. IAM no longer lists the assignment, PIM state, or expected az role assignment list outcome) — not generic advice.
 - Prefer Azure-native fixes: PIM eligible assignments, narrower scope, dedicated admin groups, just-in-time access where appropriate.
 - Keep each action concise but complete; separate actions with a blank line.
-- Return only the two sections above with no preamble or closing commentary."""
+
+Requirements — Remediation Actions:
+- Output a valid JSON array in a markdown code block tagged as `json` under the "Remediation Actions:" heading.
+- Generate one action object per Recommended Action where the action type can be mapped.
+- Use action_type "remove_role_assignment" when the recommended action removes a permanent role assignment.
+- Use action_type "convert_to_pim_eligible" when the recommended action converts a permanent assignment to PIM eligible.
+- For any other remediation that cannot be mapped to these two types, use action_type "manual_review_required" and include a top-level "description" field with plain English instructions instead of "parameters" and "validation".
+- Use EXACT values for principal_id, scope, and subscription_id from the input payload — do not approximate or invent them.
+- priority and effort must match the corresponding Recommended Action.
+- validation.type must be "role_assignment_absent" for remove_role_assignment actions, and "manual" for all others.
+- Return only the three sections above with no preamble or closing commentary."""
 
 MODEL_CATALOG = {
     "1": {
@@ -126,12 +162,15 @@ def _build_principal_payload(
                 "classification_bucket": sa.bucket,
                 "triggering_action": sa.triggering_action or "N/A",
                 "scope_display_name": _scope_display_name(r.scope, r.scope_type),
+                "scope": r.scope,
                 "scope_type": r.scope_type,
+                "subscription_id": r.subscription_id,
                 "subscription_name": sub_id_to_name.get(r.subscription_id, r.subscription_id),
             }
         )
 
     return {
+        "principal_id": principal.principal_id,
         "principal_name": principal_name,
         "principal_type": principal.principal_type,
         "severity": principal.cumulative_severity,
@@ -236,6 +275,28 @@ def _select_model_and_confirm(
     return model_info["name"], payload_map
 
 
+def _parse_remediation_actions(text: str) -> list | None:
+    """Extract the JSON array from the Remediation Actions code block, if present."""
+    match = re.search(r"```json\s*(\[.*?\])\s*```", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def _strip_remediation_section(text: str) -> str:
+    """Remove the 'Remediation Actions:' section and everything after it."""
+    lines = text.splitlines()
+    out: list[str] = []
+    for line in lines:
+        if line.strip() == "Remediation Actions:":
+            break
+        out.append(line)
+    return "\n".join(out).rstrip()
+
+
 def _append_capability_summary_to_report(
     report_path: str,
     summaries: dict[tuple[str, str], str],
@@ -248,7 +309,10 @@ def _append_capability_summary_to_report(
     for principal in data.get("principals", []):
         key = (principal.get("id", ""), principal.get("type", ""))
         if key in summaries:
-            principal["capability_summary"] = summaries[key]
+            full_text = summaries[key]
+            principal["capability_summary"] = _strip_remediation_section(full_text)
+            actions = _parse_remediation_actions(full_text)
+            principal["remediation_actions"] = actions if actions is not None else []
     report_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -260,12 +324,13 @@ def run_ai_enrichment(
 ) -> None:
     selected = _select_principals(top_principals, principal_names)
     if not selected:
-        print("AI enrichment skipped.")
+        print("AI test skipped.")
         return
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         print("AI enrichment unavailable: ANTHROPIC_API_KEY environment variable is not set.")
+        print("  To set it run: export ANTHROPIC_API_KEY=your_key_here")
         return
 
     sub_id_to_name = {sub["id"]: sub["name"] for sub in selected_subs}
@@ -295,7 +360,7 @@ def run_ai_enrichment(
         try:
             response = client.messages.create(
                 model=model_name,
-                max_tokens=1500,
+                max_tokens=4000,
                 system=SYSTEM_PROMPT,
                 messages=[
                     {
@@ -322,6 +387,10 @@ def run_ai_enrichment(
 
             for line in lines:
                 stripped = line.strip()
+
+                # Stop rendering at the Remediation Actions section
+                if stripped == "Remediation Actions:":
+                    break
 
                 if stripped == "Capability Summary:":
                     formatted.append(line)
@@ -353,6 +422,9 @@ def run_ai_enrichment(
                 formatted.append(line)
 
             print("\n".join(formatted).rstrip())
+            parsed_actions = _parse_remediation_actions(summary_text)
+            if parsed_actions is not None:
+                print(f"  -> Generated {len(parsed_actions)} structured remediation action(s).")
             print()
         except Exception as exc:
             print(f"  Error enriching {principal_name}: {exc}")

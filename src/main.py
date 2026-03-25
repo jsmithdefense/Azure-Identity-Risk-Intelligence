@@ -493,6 +493,11 @@ def main() -> None:
         except Exception as exc:
             print(f"Failed to generate PDF report: {exc}")
 
+    run_remediation = input("Run remediation engine? [y/N]: ").strip().lower()
+    if run_remediation == "y":
+        from .remediation_engine import run_remediation_engine
+        run_remediation_engine(report_path, credential)
+
 
 if __name__ == "__main__":
     try:
