@@ -8,6 +8,7 @@ import urllib.request
 from dataclasses import replace
 from typing import Dict, List
 
+from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.authorization import AuthorizationManagementClient
 
@@ -327,10 +328,13 @@ def analyze_subscription(
 
 
 def main() -> None:
-    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-    
-    # Enumerate and select subscriptions
-    available_subs = enumerate_subscriptions(credential)
+    try:
+        credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+        available_subs = enumerate_subscriptions(credential)
+    except ClientAuthenticationError:
+        print("\nError: Not authenticated with Azure.")
+        print("Run 'az login' and try again.\n")
+        sys.exit(1)
     
     if not available_subs:
         print("No active subscriptions found.")
