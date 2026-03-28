@@ -155,7 +155,9 @@ REMEDIATION ENGINE
     4. [LOW      | Effort: Low]    Remove Redundant Reader Role from rbac-test-rg            (remove_role_assignment)
 
 Select actions to execute (comma-separated numbers, 0=all, S=skip): 3,4
-
+```
+### Per-Action Approval
+```
 About to: [CRITICAL] Remove Security Admin Role from rbac-test-rg  (remove_role_assignment)
   Principal: Studying Security
   Role:      Security Admin
@@ -169,7 +171,9 @@ About to: [LOW] Remove Redundant Reader Role from rbac-test-rg  (remove_role_ass
   Scope:     /subscriptions/.../resourceGroups/rbac-test-rg
 Execute this remediation? [y/N]: y
   Result: SUCCESS — assignment removed and validated.
-
+```
+### Summary & Audit Trail
+```
 REMEDIATION SUMMARY
 ==========================================================================================
   Succeeded:      2
