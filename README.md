@@ -46,6 +46,8 @@ pip install -r requirements.txt
 az login
 ```
 
+Uses `DefaultAzureCredential`. Resolves to your Azure CLI session in local environments. No credentials are stored.
+
 ### Run
 ```bash
 python -m src.main
@@ -170,17 +172,7 @@ Azure-RBAC-Risk-Analyzer/
 - [x] AI capability summaries with prioritized remediation playbooks
 - [x] PDF report export
 - [x] Remediation engine with per-action approval and audit logging
-- [ ] Recursive group membership expansion for user-level blast radius analysis
 - [ ] Privilege escalation path detection
-- [ ] Historical report diffing between runs
-- [ ] Terraform lab environment for controlled testing
 
 ---
 
-## Authentication
-
-Uses `DefaultAzureCredential`. Resolves to your Azure CLI session in local environments. No credentials are stored.
-
-```bash
-az login
-```
