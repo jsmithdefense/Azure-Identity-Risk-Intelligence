@@ -2,9 +2,10 @@
 
 **Enumerate, score, and remediate overprivileged identities across your Azure tenant.**
 
-No third-party platforms. No agents. No connectors. Just the Azure SDK and the Anthropic API running against your control plane. 
+No third-party platforms. No agents. No connectors. Just the Azure SDK and the Anthropic API running against your control plane.
 
 ---
+
 Sample Finding:
 
 > *"The analysts group can actively manage Microsoft Sentinel incidents and alerts in the production SOC resource group — including dismissing, closing, or modifying incident status — actions that could suppress legitimate detections or obscure attacker activity."*
@@ -19,13 +20,14 @@ Azure environments accumulate RBAC assignments over time. Role names are opaque,
 
 This tool:
 - Enumerates all role assignments across every accessible subscription
-- Classifies roles by what permissions allow and at what scope thry apply
+- Classifies roles by what their permissions allow and at what scope they apply
 - Scores principals by cumulative privilege exposure across all subscriptions
 - Generates AI-powered capability summaries and prioritized remediation playbooks
 - Parses AI output into executable remediations with per-action approval
 - Executes approved remediations directly against your environment via the Azure SDK
 - Exports a professional PDF report suitable for stakeholder review
 - Logs every remediation action to an audit trail before execution
+
 ---
 
 ## Quick Start
@@ -62,6 +64,11 @@ export ANTHROPIC_API_KEY=your_key_here
 python -m src.main
 ```
 
+### Quiet Mode (suppresses verbose output — AI summaries and principal details written to PDF report only)
+```bash
+python -m src.main --quiet
+```
+
 ---
 
 ## Sample Output
@@ -71,75 +78,60 @@ python -m src.main
 TENANT-LEVEL RISK SUMMARY
 ==========================================================================================
 Subscriptions analyzed: 1
-Assigned roles: 3
-Unique Assignments: 3
+Assigned roles: 2
+Unique Assignments: 2
 
 SUBSCRIPTION RISK RANKING
 ==========================================================================================
 Rank   Subscription                                  Risk Score   Assignments   Principals
 ------------------------------------------------------------------------------------------
-1      Azure subscription 1                          160          3             1
+1      Azure subscription 1                          130          2             2
 ```
 
 ### Role Classification
 ```
-Assigned roles:
-
 Role                                          Classification               Reason
 ------------------------------------------------------------------------------------------
 Owner                                         privilege_escalation         *
-Security Admin                                privilege_escalation         *
-Reader                                        read_only                    /read
+Contributor                                   resource_control_narrow      *
 ```
 
 ### Principal Risk Analysis
-
 ```
-Name = Studying Security | Type = User | Severity = Critical | Score = 160 | Assignments = 3 | Riskiest Role = Owner
-  - High | 75 | Owner          | Action = * | Classification = privilege_escalation | Scope = subscription (subscription)   | Sub = ...eb88716d
-  - High | 65 | Security Admin | Action = * | Classification = privilege_escalation | Scope = rbac-test-rg (resource_group) | Sub = ...eb88716d
-  - Low  | 20 | Reader         | Action = /read | Classification = read_only        | Scope = rbac-test-rg (resource_group) | Sub = ...eb88716d
+Name = Studying Security | Type = User | Severity = High | Score = 75 | Assignments = 1 | Riskiest Role = Owner
+  - High | 75 | Owner | Action = * | Classification = privilege_escalation | Scope = subscription (subscription) | Sub = ...eb88716d
+
+Name = test-service-principal | Type = ServicePrincipal | Severity = Medium | Score = 55 | Assignments = 1 | Riskiest Role = Contributor
+  - Medium | 55 | Contributor | Action = * | Classification = resource_control_narrow | Scope = subscription (subscription) | Sub = ...eb88716d
 ```
 
 ### AI Capability Summary
 ```
-- As a subscription-level Owner, Studying Security has unrestricted control over every
-  resource in the subscription — they can create, modify, delete, and reconfigure any
-  service, including storage accounts, virtual machines, databases, and networking
-  infrastructure.
-
-- They can grant or revoke any Azure RBAC role to any principal at subscription scope,
-  meaning they could silently elevate another account (or a compromised identity) to
-  Owner-level access, making lateral movement and persistence trivial.
-
-- The Security Admin role on rbac-test-rg grants the ability to manage Microsoft Defender
-  for Cloud policies, dismiss security alerts, and modify security configurations — allowing
-  an attacker to blind the organization's threat detection while operating within that
-  resource group.
-
-- Combined, these assignments create a critical privilege escalation path: the principal
-  can weaponize Owner rights to create backdoor identities, exfiltrate data, or destroy
-  resources across the entire subscription with no technical barriers.
+`test-service-principal` can create, modify, and delete virtually any Azure resource within Azure subscription 1 - including virtual machines, storage accounts, databases, and networking components - without needing to involve a human operator.
+  - It can deploy new infrastructure or exfiltrate data by spinning up compute resources, copying storage blobs, or creating outbound network paths, making it a high-value target if its credentials are compromised. 
+  - It can modify or delete existing application workloads, disrupt services, or tamper with diagnostic/logging configurations, potentially blinding security monitoring across the subscription.
+  - It cannot manage Azure AD/Entra ID identities or grant access to other principals (no Owner or User Access Administrator rights), limiting lateral movement via RBAC - but resource-level abuse potential remains broad.
+  - A compromised or misconfigured service principal with subscription-wide Contributor is a persistent, non-expiring foothold that operates silently under an automated identity, making detection harder than with human accounts.
 ```
-
 ### Remediation Playbook
 ```
-1. [CRITICAL | Effort: Low] Remove Permanent Subscription-Level Owner Assignment
+1. [CRITICAL | Effort: Medium] Scope Down the Contributor Assignment to Required Resource Groups Only
 
    Why
-   A permanent, always-active Owner role at subscription scope gives Studying Security
-   unrestricted access to all resources and the ability to manipulate RBAC for every
-   principal in Azure subscription 1.
+   Subscription-wide Contributor grants blast radius across every resource in Azure
+   subscription 1; limiting scope to only the resource groups test-service-principal
+   legitimately needs dramatically reduces damage potential from credential compromise.
 
    Steps
      1. Navigate to Azure Portal → Subscriptions → Azure subscription 1 → Access control (IAM)
-     2. Filter by role Owner and locate the assignment for Studying Security
-     3. Select the assignment and click Remove, then confirm removal
+     2. Locate the Contributor assignment for test-service-principal and click Remove
+     3. Navigate to each required resource group → Access control (IAM) → Add role assignment
+     4. Assign Contributor scoped only to those resource groups
 
    Validation
    az role assignment list --assignee <principal-id> \
-     --scope /subscriptions/<subscription-id> --role Owner
-   Confirm the command returns an empty array.
+     --scope /subscriptions/<subscription-id>
+   Confirm no subscription-level Contributor assignment is returned.
 
 -> Generated 4 structured remediation action(s).
 ```
@@ -149,38 +141,51 @@ Name = Studying Security | Type = User | Severity = Critical | Score = 160 | Ass
 REMEDIATION ENGINE
 ==========================================================================================
   Principal: Studying Security (User)
-    1. [CRITICAL | Effort: Low]    Remove Permanent Subscription-Level Owner Assignment      (remove_role_assignment)
-    2. [CRITICAL | Effort: Medium] Convert Owner Access to PIM Just-in-Time Eligible Assignment  (convert_to_pim_eligible)
-    3. [CRITICAL | Effort: Low]    Remove Security Admin Role from rbac-test-rg              (remove_role_assignment)
-    4. [LOW      | Effort: Low]    Remove Redundant Reader Role from rbac-test-rg            (remove_role_assignment)
+    1. [CRITICAL | Effort: Low]    Convert Permanent Owner Assignment to PIM Eligible         (convert_to_pim_eligible)
+    2. [CRITICAL | Effort: Medium] Scope Down to Least-Privilege Role at Resource Group Level (remove_role_assignment)
+    3. [HIGH     | Effort: Low]    Enable MFA and Conditional Access for the Account          (manual_review_required)
+    4. [HIGH     | Effort: Low]    Enable Alerting on Owner-Level Role Assignment Changes     (manual_review_required)
 
-Select actions to execute (comma-separated numbers, 0=all, S=skip): 3,4
+  Principal: test-service-principal (ServicePrincipal)
+    5. [CRITICAL | Effort: Medium] Scope Down the Contributor Assignment to Required Resource Groups Only  (remove_role_assignment)
+    6. [HIGH     | Effort: Medium] Replace Broad Contributor with a Custom Role               (manual_review_required)
+    7. [HIGH     | Effort: Low]    Rotate Service Principal Credentials and Audit Recent Activity  (manual_review_required)
+    8. [MEDIUM   | Effort: Low]    Enable Diagnostic Logging and Alerting                     (manual_review_required)
+
+Select actions to execute (comma-separated numbers, 0=all, S=skip): 4,5
 ```
+
 ### Per-Action Approval
 ```
-About to: [CRITICAL] Remove Security Admin Role from rbac-test-rg  (remove_role_assignment)
+About to: [HIGH] Enable Alerting on Owner-Level Role Assignment Changes  (manual_review_required)
   Principal: Studying Security
-  Role:      Security Admin
-  Scope:     /subscriptions/.../resourceGroups/rbac-test-rg
 Execute this remediation? [y/N]: y
-  Result: SUCCESS — assignment removed and validated.
 
-About to: [LOW] Remove Redundant Reader Role from rbac-test-rg  (remove_role_assignment)
-  Principal: Studying Security
-  Role:      Reader
-  Scope:     /subscriptions/.../resourceGroups/rbac-test-rg
+  Manual review required: Create an Azure Monitor activity log alert rule scoped to
+  Azure subscription 1 that triggers on Microsoft.Authorization/roleAssignments/write
+  events, with an action group configured to notify the security team.
+  Result: MANUAL — logged to audit file.
+
+About to: [CRITICAL] Scope Down the Contributor Assignment to Required Resource Groups Only  (remove_role_assignment)
+  Principal: test-service-principal
+  Role:      Contributor
+  Scope:     /subscriptions/9d006e44-79bc-473e-afa6-1aa9eb88716d
 Execute this remediation? [y/N]: y
+
   Result: SUCCESS — assignment removed and validated.
 ```
+
 ### Summary & Audit Trail
 ```
 REMEDIATION SUMMARY
 ==========================================================================================
-  Succeeded:      2
+  Succeeded:      1
   Failed:         0
-  Manual/skipped: 0
-  Audit log:      reports/remediation_audit_20260328_003954.json
+  Manual/skipped: 1
+  Audit log:      reports/remediation_audit_20260329_142506.json
 ```
+
+---
 
 ## How It Works
 
