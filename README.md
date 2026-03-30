@@ -8,7 +8,9 @@ No third-party platforms. No agents. No connectors. Just the Azure SDK and the A
 
 Sample Finding:
 
-> *"The analysts group can actively manage Microsoft Sentinel incidents and alerts in the production SOC resource group — including dismissing, closing, or modifying incident status — actions that could suppress legitimate detections or obscure attacker activity."*
+> test-service-principal can create, modify, and delete virtually any Azure resource within Azure subscription 1 - including virtual machines, storage accounts, databases, and networking components - without needing to involve a human operator.
+>
+> It can deploy new infrastructure or exfiltrate data by spinning up compute resources, copying storage blobs, or creating outbound network paths, making it a high-value target if its credentials are compromised.
 >
 > — AI-generated summary produced by this tool against a live Azure environment
 
