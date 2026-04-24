@@ -1,8 +1,6 @@
-# RBAC Remediation Engine
+# Azure Identity Risk Intelligence
 
 **Enumerate, score, and remediate overprivileged identities across your Azure tenant.**
-
-No third-party platforms. No agents. No connectors. Just the Azure SDK and the Anthropic API running against your control plane.
 
 ---
 
@@ -18,7 +16,7 @@ Sample Finding:
 
 ## What It Does
 
-Azure environments accumulate RBAC assignments over time. Role names are opaque, assignments are scattered across subscriptions, and no native tooling tells you which identities represent the greatest real-world risk — or what to do about it.
+Azure environments accumulate RBAC assignments over time. Role names are vague, assignments are scattered across subscriptions, and no native tooling tells you which identities carry the greatest risk, why, and what to do about it.
 
 This tool:
 - Enumerates all role assignments across every accessible subscription
