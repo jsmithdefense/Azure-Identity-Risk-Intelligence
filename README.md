@@ -1,5 +1,7 @@
 # Azure Identity Risk Intelligence
 
+Azure environments accumulate RBAC assignments over time. Role names are vague, assignments are scattered across subscriptions, and no native tooling tells you which identities carry the greatest risk, why, and what to do about it.
+
 **Enumerate, score, and remediate overprivileged identities across your Azure tenant.**
 
 ---
@@ -16,9 +18,6 @@ Sample Finding:
 
 ## What It Does
 
-Azure environments accumulate RBAC assignments over time. Role names are vague, assignments are scattered across subscriptions, and no native tooling tells you which identities carry the greatest risk, why, and what to do about it.
-
-This tool:
 - Enumerates all role assignments across every accessible subscription
 - Classifies roles by what their permissions allow and at what scope they apply
 - Scores principals by cumulative privilege exposure across all subscriptions
@@ -190,7 +189,7 @@ REMEDIATION SUMMARY
 ## How It Works
 
 ### Role Classification
-Roles are classified by what their permissions actually allow — not just their names. A custom role containing `*/write` permissions gets flagged regardless of what it's called.
+Roles are classified by their permitted `actions` & `dataActions` as opposed to role names.
 
 | Classification | What It Means |
 |---|---|
